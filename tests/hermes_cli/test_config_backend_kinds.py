@@ -61,8 +61,10 @@ def fake_kind(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
-    monkeypatch.delenv("FAKE_P21_PLANE", raising=False)
+    # Bootstrap writes these directly, so record even initially absent values for undo.
+    for name in (cb.BACKEND_ENV, "FAKE_P21_PLANE"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     monkeypatch.setattr(cb, "_BOOTSTRAPPED", False)
     yield home
     for name in [m for m in sys.modules if m.startswith(f"plugins.config_backends.{FAKE}")]:
@@ -90,6 +92,12 @@ def test_unknown_kind_is_served_through_protocol_methods_only(fake_kind):
     f = Finding()
     assert _check_config_backend(backend, home, f) is True
     assert f.issues == ["fake issue"]
+
+
+def test_dotenv_backend_does_not_leak_into_later_tests():
+    """The fake backend and its bootstrap settings belong to one test only."""
+    assert cb.BACKEND_ENV not in os.environ
+    assert "FAKE_P21_PLANE" not in os.environ
 
 
 def test_file_backend_protocol_defaults_are_no_ops(tmp_path):

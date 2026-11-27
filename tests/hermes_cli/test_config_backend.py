@@ -1,5 +1,6 @@
 """The ConfigBackend seam (config-config design §4.1, D10) and its reader gate."""
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +14,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
+    # Register an absent selector too: bootstrap publishes .env values without monkeypatch.
+    monkeypatch.setenv(cb.BACKEND_ENV, "")
+    monkeypatch.delenv(cb.BACKEND_ENV)
     h = tmp_path / "home"
     h.mkdir()
     return h
@@ -90,6 +93,11 @@ class TestBootstrapSelector:
     def test_dotenv_backend_override_is_gone(self):
         # One mechanism: the bootstrap replaces #134362's per-call .env override.
         assert not hasattr(cb, "_dotenv_backend_override")
+
+
+def test_dotenv_selector_does_not_leak_into_later_tests():
+    """Regression for #160722: bootstrap writes must be undone with the fixture."""
+    assert cb.BACKEND_ENV not in os.environ
 
 
 class TestRemoteBackendShape:
