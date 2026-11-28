@@ -98,22 +98,29 @@ class TestWrappedProse:
     """Regression for #160567: hard wrapping must not hide a precise prose match."""
 
     @pytest.mark.parametrize("separator", ["\n    ", "\r\n\t", " \n  \t"])
-    @pytest.mark.parametrize("boundary_spaces", [False, True])
-    def test_replacement_preserves_text_outside_wrapped_span(self, separator, boundary_spaces):
+    def test_replacement_preserves_text_outside_wrapped_span(self, separator):
         prefix = "# Notes\r\n\r\n- \t "
         suffix = "  \t remains unchanged.\r\n\r\nEnd.\r\n"
-        region = "Keep the original" + separator + "sentence intact."
-        old = "Keep the original sentence intact."
-        if boundary_spaces:
-            prefix += "["
-            suffix = "]" + suffix
-            region = "  " + region + "\t "
-            old = " " + old + " "
-        content = prefix + region + suffix
-        out, count, _, err = fuzzy_find_and_replace(content, old, "Updated sentence.")
+        content = prefix + "Keep the original" + separator + "sentence intact." + suffix
+        out, count, _, err = fuzzy_find_and_replace(content, "Keep the original sentence intact.", "Updated sentence.")
         assert err is None
         assert count == 1
         assert out.encode() == (prefix + "Updated sentence." + suffix).encode()
+
+    def test_boundary_newline_never_swallows_the_next_lines_indentation(self, tmp_path, monkeypatch):
+        """A trailing ``\\n`` in old_string on a CRLF file would collapse onto the whole
+        ``\\r\\n        `` run: the next line lost its indentation (the real patch tool)."""
+        import json
+
+        from tools.file_tools import patch_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        target = tmp_path / "a.py"
+        original = b"class A:\r\n    def a(self):\r\n        pass\r\n"
+        target.write_bytes(original)
+        json.loads(patch_tool(mode="replace", path=str(target), old_string="def a(self):\n",
+                              new_string="def b(self):\n"))
+        assert target.read_bytes() in (original, original.replace(b"def a", b"def b"))
 
     def test_repeated_wrapped_sentences_require_explicit_replace_all(self):
         first = "Keep the original\n    sentence intact."

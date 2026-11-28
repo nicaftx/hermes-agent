@@ -197,16 +197,26 @@ def _strategy_whitespace_normalized(content: str, pattern: str) -> list[Span]:
 
 
 def _strategy_whitespace_collapsed(content: str, pattern: str) -> list[Span]:
-    """Match hard-wrapped text exactly after collapsing whitespace, with lossless spans."""
-    normalized = []
-    positions: list[Span] = []
-    for match in re.finditer(r'\s+|\S', content):
-        normalized.append(' ' if match.group().isspace() else match.group())
-        positions.append(match.span())
-    matches = _strategy_exact(''.join(normalized), re.sub(r'\s+', ' ', pattern))
-    # Each normalized character owns exactly its original character or whitespace
-    # run. Adjacent indentation/separators belong to the match only if requested.
-    return [(positions[start][0], positions[end - 1][1]) for start, end in matches]
+    """Hard-wrapped text: every whitespace run (line breaks included) equals one space,
+    every other character must match exactly. A span covers exactly its matched characters and
+    whole runs, so the bytes around it (CRLF, tabs, trailing spaces) survive the replacement.
+    A pattern with leading/trailing whitespace is declined: its boundary run would swallow the
+    file's whole run there (a trailing ``\\n`` would eat the next line's indentation)."""
+    if pattern != pattern.strip():
+        return []
+    matches = _strategy_exact(re.sub(r'\s+', ' ', content), re.sub(r'\s+', ' ', pattern))
+    if not matches:  # the common miss stays two C-level passes: no per-character mapping
+        return []
+    run_starts: list[int] = []  # normalized index of each multi-char run
+    shrunk = [0]  # characters collapsed away before run k
+    for run in re.finditer(r'\s{2,}', content):
+        run_starts.append(run.start() - shrunk[-1])
+        shrunk.append(shrunk[-1] + len(run.group()) - 1)
+
+    def to_original(norm_pos: int) -> int:  # runs strictly before norm_pos are fully behind it
+        return norm_pos + shrunk[bisect.bisect_left(run_starts, norm_pos)]
+
+    return [(to_original(start), to_original(end)) for start, end in matches]
 
 
 def _strategy_indentation_flexible(content: str, pattern: str) -> list[Span]:
