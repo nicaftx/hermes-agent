@@ -7,7 +7,7 @@ import os
 
 from hermes_cli.cli_commands_session_tools import _pr, _t
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_profile_lifecycle import ack_confirmed, ack_failure
+from hermes_cli.gateway_profile_lifecycle import ack_confirmed, ack_failure, serve_profile_hot
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,6 @@ def _pause_owner(home, control_home, identity):
 
 
 def _restore_gateway_snapshot(cli, store, snap_id):
-    from gateway.control_socket import request_serve_profile_hot
     from hermes_cli.backup import restore_quick_snapshot
     from hermes_cli.data_cleanup_holders import manual_gateway_identity
     from hermes_cli.gateway_connection import GatewayConnection
@@ -129,7 +128,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     finally:
         if unserved:
             parked_marker_path(home).unlink(missing_ok=True)  # serve-profile refuses a parked profile
-            ack = request_serve_profile_hot(control_home, home.name)
+            ack = serve_profile_hot(control_home, home.name, home)
             if not ack_confirmed(ack, "served", home.name):
                 logger.warning("Profile re-serve after snapshot restore: %s", ack)
                 print(f"  Profile '{home.name}' is not served again yet: {ack_failure(ack)}. "

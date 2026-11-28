@@ -10,6 +10,12 @@ from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
 from hermes_cli.gateway_session_store import GatewaySessionStore
 from hermes_cli.profiles import parked_marker_path
+from tests.module_clock import ModuleClock
+
+
+class _SteppingClock(ModuleClock):
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 class _Connection:
@@ -95,6 +101,9 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
         return {"pending": True}
     monkeypatch.setattr("gateway.control_socket.request_unserve_profile", unserve)
     monkeypatch.setattr("gateway.control_socket.request_serve_profile_hot", serve)
+    # A host that never lists the profile: the pending serve is followed to its settle deadline.
+    from hermes_cli import gateway_profile_lifecycle
+    monkeypatch.setattr(gateway_profile_lifecycle, "time", _SteppingClock(1000.0))
     monkeypatch.setattr("hermes_cli.profiles_remove.wait_profile_unowned", lambda home: True)
     monkeypatch.setattr("hermes_cli.backup.restore_quick_snapshot",
                         restore or (lambda sid: pytest.fail("restore ran without the identified owner's handoff")))

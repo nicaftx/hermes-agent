@@ -125,6 +125,54 @@ def test_restart_after_stop_unparks_and_serves_the_profile(homes, monkeypatch, c
     assert "Profile 'worker' served by the host gateway." in capsys.readouterr().out
 
 
+def test_a_pending_serve_is_confirmed_once_the_host_lists_the_profile(homes, monkeypatch, capsys):
+    """The verb answers ``pending`` after 5 s and keeps serving: a slow host is not a refusal."""
+    from hermes_cli import gateway as gw
+    from gateway import control_socket
+    root, secondary = homes
+    (secondary / 'gateway.parked').touch()
+    owner = SimpleNamespace(home=root, profile_label='default', profiles=('default',),
+                            describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot',
+                        lambda home, name: {'pending': True, 'served_profiles': ['default']})
+    authorities = [{'profile_id': str(root), 'home': str(root)}]
+    listings = iter([authorities, authorities, [*authorities, {'profile_id': str(secondary), 'home': str(secondary)}]])
+    monkeypatch.setattr(control_socket, 'identify_gateway',
+                        lambda home, **kw: {'served_profiles': next(listings)})
+    gw._cmd_restart(SimpleNamespace())
+    out = capsys.readouterr().out
+    assert "Profile 'worker' served by the host gateway." in out and 'not confirmed' not in out
+
+
+def test_a_pending_unserve_and_serve_restart_is_confirmed_from_the_hosts_served_set(homes, monkeypatch, capsys):
+    """Restarting a served profile: both verbs answer ``pending``; the host's identify settles each."""
+    from hermes_cli import gateway as gw, gateway_lifecycle_guards
+    from gateway import control_socket
+    root, secondary = homes
+    owner = SimpleNamespace(home=root, profile_label='default', profiles=('default', 'worker'),
+                            describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: owner)
+    monkeypatch.setattr(gateway_lifecycle_guards, 'refuse_while_sessions_live', lambda *a, **kw: None)
+    monkeypatch.setattr(control_socket, 'request_unserve_profile', lambda home, name: {'pending': True})
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
+    launch, worker = ({'profile_id': str(h), 'home': str(h)} for h in (root, secondary))
+    listings = iter([[launch, worker], [launch], [launch], [launch, worker]])
+    monkeypatch.setattr(control_socket, 'identify_gateway',
+                        lambda home, **kw: {'served_profiles': next(listings)})
+    gw._cmd_restart(SimpleNamespace())
+    out = capsys.readouterr().out
+    assert "Profile 'worker' restarted by the host gateway." in out and 'not confirmed' not in out
+
+
 def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch):
     from hermes_cli import gateway as gw
     _, secondary = homes
