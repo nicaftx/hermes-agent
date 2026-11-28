@@ -128,7 +128,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     finally:
         if unserved:
             parked_marker_path(home).unlink(missing_ok=True)  # serve-profile refuses a parked profile
-            ack = serve_profile_hot(control_home, home.name, home)
+            ack = serve_profile_hot(control_home, home.name)
             if not ack_confirmed(ack, "served", home.name):
                 logger.warning("Profile re-serve after snapshot restore: %s", ack)
                 print(f"  Profile '{home.name}' is not served again yet: {ack_failure(ack)}. "

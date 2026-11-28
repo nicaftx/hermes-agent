@@ -636,17 +636,32 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
                 return {"error": f"profile '{name}' was removed or parked during startup"}
             return {"served": name, "served_profiles": result["served_profiles"]}
 
+    # name -> the latest request's operation, kept until a caller has read its outcome: a ``pending``
+    # answer is followed (``follow``) to the verb's own result, never to a served list that changes
+    # mid-operation (an unserve retires the authority before its adapters are torn down).
+    operations: dict = {}
+
     def handler(params):
-        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        name = params.get("name")
+        key = name if isinstance(name, str) else ""
+        if params.get("follow"):
+            future = operations.get(key)
+            if future is None:
+                return {"error": f"no {'serve' if serve else 'unserve'} of '{name}' is in flight"}
+        else:
+            future = operations[key] = asyncio.run_coroutine_threadsafe(apply(name), loop)
         try:
-            return future.result(timeout=5.0)
+            answer = future.result(timeout=5.0)
         except TimeoutError:
             # Keep running: the client must not interpret an incomplete teardown as stopped.
-            return {"pending": True, "served_profiles": runner.served_profile_names()}
+            return {"pending": True, "follow": True, "served_profiles": runner.served_profile_names()}
         except Exception as exc:
             from storage_user_copy import error_type_name
             logger.warning("Profile lifecycle request failed", exc_info=True)
-            return {"error": f"{error_type_name(exc)}: {exc}"}
+            answer = {"error": f"{error_type_name(exc)}: {exc}"}
+        if operations.get(key) is future:
+            del operations[key]
+        return answer
 
     return handler
 

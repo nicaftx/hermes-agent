@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
-from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
@@ -27,43 +26,40 @@ def ack_failure(answer):
 SETTLE_SECONDS = 30.0
 
 
-def _settle_pending(answer, key: str, name: str, host_home, profile_home, *, settle: float):
-    """Follow a ``pending`` serve/unserve answer until the host's served set shows it done.
+def _settle_pending(request, name: str, *, settle: float):
+    """Send ``request`` and follow a ``pending`` answer to the host operation's own outcome.
 
     The verbs answer within 5 s and keep working after that, so ``pending`` is a slow operation (a
-    loaded host took 5.75 s to serve a profile back), not a refused one. The outcome is read from
-    ``identify`` on the host's own socket: ``profile_home`` among the authorities accepting work
-    (``served``) or absent from them (``unserved``) gives the confirmed ack; ``settle`` passing, or
-    a host that stops answering, keeps the pending answer, which callers report as not confirmed.
+    loaded host took 5.75 s to serve a profile back), not a refused one. A host that says ``follow``
+    keeps the operation's result until it is read: each follow-up blocks up to 5 s on the host and
+    returns ``served``/``unserved`` once the teardown or adapter setup really finished, or the error
+    that ended it (parked during startup). Never the served list: it changes mid-operation. An older
+    host (no ``follow``), ``settle`` passing, or a host that stops answering keeps the pending answer,
+    which callers report as not confirmed.
     """
-    from gateway.control_socket import identify_gateway
-    if not (isinstance(answer, dict) and answer.get("pending") and not answer.get("error")):
-        return answer
-    target, want = Path(profile_home).resolve(), key == "served"
+    answer = request(name)
     deadline = time.monotonic() + settle
-    while time.monotonic() < deadline:
-        served = (identify_gateway(host_home) or {}).get("served_profiles")
-        if isinstance(served, list):
-            present = any(isinstance(entry, dict) and entry.get("home")
-                          and Path(entry["home"]).resolve() == target for entry in served)
-            if present == want:
-                return {key: name}
-        time.sleep(0.25)
+    while (isinstance(answer, dict) and answer.get("pending") and answer.get("follow")
+           and not answer.get("error") and time.monotonic() < deadline):
+        followed = request(name, follow=True)
+        if followed is None:
+            break
+        answer = followed
     return answer
 
 
-def serve_profile_hot(host_home, name, profile_home, *, settle: float = SETTLE_SECONDS):
-    """``serve-profile`` for ``name`` (at ``profile_home``), with a ``pending`` answer followed."""
+def serve_profile_hot(host_home, name, *, settle: float = SETTLE_SECONDS):
+    """``serve-profile`` for ``name``, with a ``pending`` answer followed to its outcome."""
     from gateway.control_socket import request_serve_profile_hot
-    return _settle_pending(request_serve_profile_hot(host_home, name), "served", name, host_home,
-                           profile_home, settle=settle)
+    return _settle_pending(lambda n, **kw: request_serve_profile_hot(host_home, n, **kw), name,
+                           settle=settle)
 
 
-def unserve_profile(host_home, name, profile_home, *, settle: float = SETTLE_SECONDS):
-    """``unserve-profile`` for ``name`` (at ``profile_home``), with a ``pending`` answer followed."""
+def unserve_profile(host_home, name, *, settle: float = SETTLE_SECONDS):
+    """``unserve-profile`` for ``name``, with a ``pending`` answer followed to its outcome."""
     from gateway.control_socket import request_unserve_profile
-    return _settle_pending(request_unserve_profile(host_home, name), "unserved", name, host_home,
-                           profile_home, settle=settle)
+    return _settle_pending(lambda n, **kw: request_unserve_profile(host_home, n, **kw), name,
+                           settle=settle)
 
 
 def mark_planned_stop(pid: int | None = None) -> None:
@@ -133,7 +129,7 @@ def profile_lifecycle(command: str, args) -> bool:
             if live_default_gateway_pid() is None:
                 return False  # Unpark even when today's normal start path must start the host first.
         host_home = owner.home if owner is not None else get_default_hermes_root()
-        answer = serve_profile_hot(host_home, name, home)
+        answer = serve_profile_hot(host_home, name)
         if ack_confirmed(answer, "served", name):
             print(f"Profile '{name}' served by the host gateway.")
         else:
@@ -154,7 +150,7 @@ def profile_lifecycle(command: str, args) -> bool:
     if command == "stop":
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
         marker.touch()
-        answer = unserve_profile(host_home, name, home)
+        answer = unserve_profile(host_home, name)
         if ack_confirmed(answer, "unserved", name):
             print(f"Profile '{name}' parked; its bots and cron are stopped. "
                   f"Start again with: hermes -p {name} gateway start")
@@ -163,11 +159,11 @@ def profile_lifecycle(command: str, args) -> bool:
             print("The host drops it on its next rescan (within 30s).")
         return True
 
-    answer = unserve_profile(host_home, name, home)
+    answer = unserve_profile(host_home, name)
     if not ack_confirmed(answer, "unserved", name):
         print(f"Profile '{name}' restart was not confirmed: {ack_failure(answer)}.")
         return True
-    answer = serve_profile_hot(host_home, name, home)
+    answer = serve_profile_hot(host_home, name)
     if ack_confirmed(answer, "served", name):
         print(f"Profile '{name}' restarted by the host gateway.")
     else:

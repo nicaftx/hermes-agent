@@ -125,12 +125,22 @@ def test_restart_after_stop_unparks_and_serves_the_profile(homes, monkeypatch, c
     assert "Profile 'worker' served by the host gateway." in capsys.readouterr().out
 
 
-def test_a_pending_serve_is_confirmed_once_the_host_lists_the_profile(homes, monkeypatch, capsys):
-    """The verb answers ``pending`` after 5 s and keeps serving: a slow host is not a refusal."""
+def _host_verb(*outcomes):
+    """A host verb answering ``pending`` (followable) first, then each follow-up from ``outcomes``."""
+    answers = iter(outcomes)
+
+    def verb(home, name, follow=False):
+        return next(answers) if follow else {'pending': True, 'follow': True, 'served_profiles': ['default']}
+    return verb
+
+
+def test_a_pending_serve_reports_the_host_operations_outcome(homes, monkeypatch, capsys):
+    """The verb answers ``pending`` after 5 s and keeps working: the CLI follows THAT operation, so a
+    slow serve is confirmed and a serve that ends parked is reported, whatever the served list says
+    meanwhile (the host lists a profile before its adapter setup can still park it)."""
     from hermes_cli import gateway as gw
     from gateway import control_socket
     root, secondary = homes
-    (secondary / 'gateway.parked').touch()
     owner = SimpleNamespace(home=root, profile_label='default', profiles=('default',),
                             describe=lambda: 'test host')
     monkeypatch.setenv('HERMES_HOME', str(secondary))
@@ -138,19 +148,22 @@ def test_a_pending_serve_is_confirmed_once_the_host_lists_the_profile(homes, mon
     monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
     monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
     monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
-    monkeypatch.setattr(control_socket, 'request_serve_profile_hot',
-                        lambda home, name: {'pending': True, 'served_profiles': ['default']})
-    authorities = [{'profile_id': str(root), 'home': str(root)}]
-    listings = iter([authorities, authorities, [*authorities, {'profile_id': str(secondary), 'home': str(secondary)}]])
-    monkeypatch.setattr(control_socket, 'identify_gateway',
-                        lambda home, **kw: {'served_profiles': next(listings)})
-    gw._cmd_restart(SimpleNamespace())
-    out = capsys.readouterr().out
-    assert "Profile 'worker' served by the host gateway." in out and 'not confirmed' not in out
+    listed = {'served_profiles': [{'profile_id': str(h), 'home': str(h)} for h in (root, secondary)]}
+    monkeypatch.setattr(control_socket, 'identify_gateway', lambda home, **kw: listed)
+
+    for outcome, said in (({'served': 'worker'}, "Profile 'worker' served by the host gateway."),
+                          ({'error': "profile 'worker' was removed or parked during startup"}, 'not confirmed')):
+        (secondary / 'gateway.parked').touch()
+        monkeypatch.setattr(control_socket, 'request_serve_profile_hot', _host_verb({'pending': True, 'follow': True}, outcome))
+        gw._cmd_restart(SimpleNamespace())
+        out = capsys.readouterr().out
+        assert said in out, out
+    assert "served by the host gateway" not in out
 
 
-def test_a_pending_unserve_and_serve_restart_is_confirmed_from_the_hosts_served_set(homes, monkeypatch, capsys):
-    """Restarting a served profile: both verbs answer ``pending``; the host's identify settles each."""
+def test_a_pending_stop_is_confirmed_only_by_the_host_teardown(homes, monkeypatch, capsys):
+    """``stop`` answers ``pending``: the served list drops the profile before its bots are torn down,
+    so only the unserve's own outcome may report the bots and cron stopped."""
     from hermes_cli import gateway as gw, gateway_lifecycle_guards
     from gateway import control_socket
     root, secondary = homes
@@ -162,15 +175,17 @@ def test_a_pending_unserve_and_serve_restart_is_confirmed_from_the_hosts_served_
     monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
     monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: owner)
     monkeypatch.setattr(gateway_lifecycle_guards, 'refuse_while_sessions_live', lambda *a, **kw: None)
-    monkeypatch.setattr(control_socket, 'request_unserve_profile', lambda home, name: {'pending': True})
-    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
-    launch, worker = ({'profile_id': str(h), 'home': str(h)} for h in (root, secondary))
-    listings = iter([[launch, worker], [launch], [launch], [launch, worker]])
-    monkeypatch.setattr(control_socket, 'identify_gateway',
-                        lambda home, **kw: {'served_profiles': next(listings)})
-    gw._cmd_restart(SimpleNamespace())
-    out = capsys.readouterr().out
-    assert "Profile 'worker' restarted by the host gateway." in out and 'not confirmed' not in out
+    unlisted = {'served_profiles': [{'profile_id': str(root), 'home': str(root)}]}
+    monkeypatch.setattr(control_socket, 'identify_gateway', lambda home, **kw: unlisted)
+
+    for outcome, said in (({'unserved': 'worker'}, 'its bots and cron are stopped'),
+                          ({'error': 'TimeoutError: adapter teardown'}, 'immediate stop was not confirmed')):
+        (secondary / 'gateway.parked').unlink(missing_ok=True)
+        monkeypatch.setattr(control_socket, 'request_unserve_profile', _host_verb({'pending': True, 'follow': True}, outcome))
+        gw._cmd_stop(SimpleNamespace())
+        out = capsys.readouterr().out
+        assert said in out, out
+    assert 'bots and cron are stopped' not in out
 
 
 def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch):
