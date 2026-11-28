@@ -171,13 +171,14 @@ def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, 
 
 def caption_landed(result: Any, images: list) -> bool:
     """The photo whose caption carries the footer was delivered, or is queued for a re-upload that
-    carries it (``raw_response["deferred"]``: flood control; a separate footer would repeat it).
+    carries it (``raw_response["deferred"]``: flood control; a separate footer would repeat it), or
+    went out as its URL with the caption in text (``raw_response["linked"]``).
     ``success`` means at least one photo landed, so that photo listed in ``raw_response["failed"]``
     (``(path_or_url, error)``) took the footer with it. False when no caption carries it."""
     url = next((u for u, alt in images if getattr(alt, "runtime_footer", "")), None)
     raw = getattr(result, "raw_response", None)
     raw = raw if isinstance(raw, dict) else {}
-    if url is None or url in (raw.get("deferred") or ()):
+    if url is None or url in (raw.get("deferred") or ()) or url in (raw.get("linked") or ()):
         return url is not None
     if not getattr(result, "success", False):
         return False

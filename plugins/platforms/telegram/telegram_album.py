@@ -85,14 +85,15 @@ async def send_animations(adapter: Any, chat_id: str, animations: list[tuple], m
         if not result.success and not uncertain:
             logger.error("[%s] Failed to send image: %s", adapter.name, result.error)
         ambiguous = ambiguous or uncertain
-        delivered = delivered or result.success or uncertain
+        delivered = delivered or (result.success and not result.link_fallback) or uncertain
     return delivered, ambiguous
 
 
 async def _send_each(adapter: Any, chat_id: str, photos: list[tuple], metadata: Optional[dict], human_delay: float,
-                     failed: list, deferred: list) -> tuple[bool, bool]:
+                     failed: list, deferred: list, linked: list) -> tuple[bool, bool]:
     """One upload per photo (``send_image_file``'s photo -> document fallbacks); failures land in
-    ``failed``, and those a flood window deferred to a later re-upload also in ``deferred``.
+    ``failed``, and those a flood window deferred to a later re-upload also in ``deferred``; a photo
+    sent as its URL (and caption) in text lands in ``linked``, not delivered (#160210).
     Returns ``(delivered, ambiguous)``: a photo that may be in the chat counts as both."""
     delivered = ambiguous = False
     for photo_idx, (image_url, alt_text) in enumerate(photos):
@@ -101,7 +102,9 @@ async def _send_each(adapter: Any, chat_id: str, photos: list[tuple], metadata: 
         result = await _send_one(adapter, chat_id, image_url, alt_text, metadata)
         uncertain = _uncertain(result)
         ambiguous = ambiguous or uncertain
-        delivered = delivered or result.success or uncertain
+        delivered = delivered or (result.success and not result.link_fallback) or uncertain
+        if result.success and result.link_fallback:
+            linked.append(image_url)
         if not result.success and not uncertain:
             failed.append((_local_path(image_url) or image_url, result.error or "send failed"))
             if isinstance(result.raw_response, dict) and result.raw_response.get("deferred_upload"):
@@ -191,13 +194,15 @@ async def send_photo_album(
 ) -> SendResult:
     """Send ``(url, alt)`` photos as albums. ``success`` = at least one photo delivered or possibly
     delivered; ``raw_response`` carries ``failed`` (``[(photo, error)]``), ``deferred`` (the photo
-    URLs among them a flood window queued for a later re-upload, caption included), ``refused`` (when
+    URLs among them a flood window queued for a later re-upload, caption included), ``linked`` (photo
+    URLs sent as text with their caption in place of a refused upload), ``refused`` (when
     ``per_photo_fallback`` is off: the first refused chunk's photos and every later one, in order,
     for the caller to send its own way) and
     ``ambiguous`` (a chunk was sent but never confirmed) whenever any applies."""
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text as redact
     failed: list[tuple[str, str]] = []
     deferred: list[str] = []
+    linked: list[str] = []
     refused: list[tuple] = []
     try:
         from telegram import InputMediaPhoto
@@ -228,7 +233,7 @@ async def send_photo_album(
                 logger.warning("[%s] send_media_group refused (chunk %d/%d), falling back to per-image: %s",
                                adapter.name, chunk_idx + 1, len(chunks), redact(err), exc_info=True)
         if per_photo_fallback:
-            each_delivered, each_ambiguous = await _send_each(adapter, chat_id, sent, metadata, human_delay, failed, deferred)
+            each_delivered, each_ambiguous = await _send_each(adapter, chat_id, sent, metadata, human_delay, failed, deferred, linked)
             delivered, ambiguous = delivered or each_delivered, ambiguous or each_ambiguous
         else:
             # The caller's per-file fallback runs after we return, so later albums would land
@@ -237,11 +242,11 @@ async def send_photo_album(
             break
     if not chunks:  # no media-group support
         if per_photo_fallback:
-            each_delivered, each_ambiguous = await _send_each(adapter, chat_id, photos, metadata, human_delay, failed, deferred)
+            each_delivered, each_ambiguous = await _send_each(adapter, chat_id, photos, metadata, human_delay, failed, deferred, linked)
             delivered, ambiguous = delivered or each_delivered, ambiguous or each_ambiguous
         else:
             refused = list(photos)
-    detail = {"failed": failed, "deferred": deferred, "refused": refused, "ambiguous": ambiguous} \
-        if failed or refused or ambiguous else None
+    detail = {"failed": failed, "deferred": deferred, "linked": linked, "refused": refused, "ambiguous": ambiguous} \
+        if failed or linked or refused or ambiguous else None
     error = None if delivered or refused else "all images failed to send" + (f": {failed[0][1]}" if failed else "")
     return SendResult(success=delivered, error=error, raw_response=detail)

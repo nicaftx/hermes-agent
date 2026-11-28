@@ -342,8 +342,10 @@ class MattermostAdapter(BasePlatformAdapter):
         from gateway.platforms.helpers import ssrf_checked_aiohttp_get
         from tools.url_safety import is_safe_url
 
-        async def fallback() -> SendResult:
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
+        async def fallback() -> SendResult:  # the URL as text is not the media (#160210)
+            sent = await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
+            sent.link_fallback = True
+            return sent
 
         if not is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")

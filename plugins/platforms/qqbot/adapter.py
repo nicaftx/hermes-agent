@@ -1533,7 +1533,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return result
         logger.warning("[%s] Image send failed, falling back to text: %s", self._log_tag, result.error)
         fallback = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        sent = await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        sent.link_fallback = True  # the URL as text is not the image (#160210)
+        return sent
 
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs) -> SendResult:
         return await self._send_media(chat_id, image_path, MEDIA_TYPE_IMAGE, "image", caption, reply_to)

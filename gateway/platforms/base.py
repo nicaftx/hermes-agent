@@ -1577,11 +1577,10 @@ class SendResult:
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
-    # Extra ids (send order) when a payload was split; ``message_id`` is then the LAST id so
-    # later edits target the newest chunk.
+    # Extra ids (send order) of a split payload; ``message_id`` is then the LAST id (edits target the newest chunk).
     continuation_message_ids: tuple = ()
-    # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
-    # branch without substring-matching ``error``.
+    link_fallback: bool = False  # a media URL went out as text in place of a refused upload: not delivered media
+    # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`: branch on it, not on ``error`` text.
     error_kind: Optional[str] = None
 
 
@@ -2856,11 +2855,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]],
         metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
-        """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
-        ``send_animation``, local files via ``send_image_file``); override to bundle natively
-        (Signal). Returns success when at least one image was delivered — the outcome
-        the turn-level delivery tracker records; every override must return the same
-        aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
+        """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via ``send_animation``,
+        local files via ``send_image_file``); override to bundle natively (Signal). Returns success when at
+        least one image was delivered (a ``link_fallback`` text is not one, #160210) — the outcome the turn-level
+        delivery tracker records; every override must return it, or a media-only turn reports FAILURE (#106153)."""
         delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
@@ -2880,7 +2878,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                 else:
-                    delivered = True
+                    delivered = delivered or not img_result.link_fallback
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
         if not images:
@@ -2892,9 +2890,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Send an image natively; default falls back to sending the URL as text."""
-        text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        """The URL as text: a no-native platform's image; a ``link_fallback`` from a native override's super()."""
+        result = await self.send(chat_id=chat_id, content=f"{caption}\n{image_url}" if caption else image_url,
+                                 reply_to=reply_to, metadata=metadata)
+        result.link_fallback = type(self).send_image is not BasePlatformAdapter.send_image
+        return result
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,

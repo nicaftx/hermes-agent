@@ -3440,10 +3440,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
                 safe_url_for_log(image_url), e, exc_info=True)
-            # Fall back to sending the URL as text
-            text = f"{caption}\n{image_url}" if caption else image_url
-            return await self.send(
-                chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,

@@ -1451,7 +1451,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
-            delivered = delivered or result.success
+            delivered = delivered or (result.success and not result.link_fallback)
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_document(
